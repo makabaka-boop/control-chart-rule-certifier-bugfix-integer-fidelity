@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { evaluateReadings, parseReadings } from './api.js'
+import { parseIntegerToken } from './lossless-json.js'
 import ControlChart from './ControlChart.jsx'
 import ResultTable from './ResultTable.jsx'
 
@@ -19,21 +20,27 @@ export default function App() {
     setError(null)
     setData(null)
     try {
-      if (!/^[+-]?\d+$/.test(target.trim())) throw new Error('target 必须是整数')
-      if (!/^\d+$/.test(sigma.trim()) || Number(sigma) <= 0) {
+      // 整数一律以 bigint 保存与发送：2^53 以上也不允许被 Number() 静默改写
+      let targetValue
+      let sigmaValue
+      try {
+        targetValue = parseIntegerToken(target.trim())
+      } catch {
+        throw new Error('target 必须是整数')
+      }
+      try {
+        sigmaValue = parseIntegerToken(sigma.trim())
+      } catch {
+        throw new Error('sigma 必须是正整数')
+      }
+      if (sigmaValue <= 0n) {
         throw new Error('sigma 必须是正整数')
       }
       const readings = parseReadings(readingsText)
       if (readings.length < 2 || readings.length > 200) {
         throw new Error(`readings 需要 2 至 200 个整数（当前 ${readings.length} 个）`)
       }
-      setData(
-        await evaluateReadings({
-          target: Number(target.trim()),
-          sigma: Number(sigma.trim()),
-          readings,
-        }),
-      )
+      setData(await evaluateReadings({ target: targetValue, sigma: sigmaValue, readings }))
     } catch (e) {
       setError(e.message)
     }
@@ -94,7 +101,7 @@ export default function App() {
           ) : (
             <div className="banner banner-violation" data-testid="verdict">
               <strong>失控：{v.rule_id}</strong> — {v.rule_name}（{SIDE_LABEL[v.side]}，首个违规结束下标{' '}
-              {v.end_index}，证据下标 {v.evidence_indices.join(', ')}）
+              {v.end_index.toString()}，证据下标 {v.evidence_indices.map((i) => i.toString()).join(', ')}）
             </div>
           )}
 

@@ -1,6 +1,10 @@
 /**
  * 控制图 SVG：读数折线/点、中心线与 σ 分区。
  * 数据全部来自 /api/evaluate 的响应，本组件不做任何规则判定。
+ *
+ * 值域（target / sigma / 读数 / 控制线）全部以 bigint 精确计算，
+ * 仅在最后一步把 0..PLOT_H 的比例放大到整数比例后转 Number 取像素，
+ * 因此 2^53 附近的控制线与证据点不会因双精度舍入错位或漂移。
  */
 const WIDTH = 920
 const PAD_L = 56
@@ -8,7 +12,10 @@ const PAD_R = 16
 const PAD_T = 20
 const PAD_B = 36
 const PLOT_W = WIDTH - PAD_L - PAD_R
-const PLOT_H = 360
+const PLOT_H = 360n
+
+// 值→像素前先放大到这个比例，保证视觉精度（值差可能远小于值域的 8%）
+const SCALE = 100000n
 
 const ZONE_COLOR = {
   beyond_plus: '#fde2e2',
@@ -32,23 +39,30 @@ const POINT_COLOR = {
   beyond_minus: '#c0392b',
 }
 
+const fmt = (v) => v.toString()
+
 export default function ControlChart({ data }) {
-  const { points, limits, target, sigma } = data
+  const { points, limits, target } = data
   const n = points.length
-  const evidence = new Set(
-    (data.violation?.evidence_indices || []),
-  )
+  const evidence = new Set(data.violation?.evidence_indices || [])
 
-  const values = points.map((p) => p.value)
-  const rawMin = Math.min(...values, limits.lcl_3s)
-  const rawMax = Math.max(...values, limits.ucl_3s)
+  // 以下 min/max/边界全部是 bigint 精确运算
+  let rawMin = points.reduce((m, p) => (p.value < m ? p.value : m), points[0].value)
+  let rawMax = points.reduce((m, p) => (p.value > m ? p.value : m), points[0].value)
+  if (limits.lcl_3s < rawMin) rawMin = limits.lcl_3s
+  if (limits.ucl_3s > rawMax) rawMax = limits.ucl_3s
   // 留余量，保证越线点仍在可视区内
-  const padY = Math.max(1, Math.ceil((rawMax - rawMin) * 0.08))
-  const yMin = rawMin - padY
-  const yMax = rawMax + padY
+  const padY = ((rawMax - rawMin) * 8n + 99n) / 100n // ceil(span * 0.08)，至少 0
+  const yMin = rawMin - (padY < 1n ? 1n : padY)
+  const yMax = rawMax + (padY < 1n ? 1n : padY)
+  const span = yMax - yMin
 
-  const x = (i) => PAD_L + (n === 1 ? PLOT_W / 2 : (i / (n - 1)) * PLOT_W)
-  const y = (v) => PAD_T + PLOT_H - ((v - yMin) / (yMax - yMin)) * PLOT_H
+  const x = (i) => PAD_L + (n === 1 ? PLOT_W / 2 : (Number(i) / (n - 1)) * PLOT_W)
+  // 精确比例映射：先以 SCALE 放大做 bigint 除法，再换算为像素，避免大数直接相减丢精度
+  const y = (v) => {
+    const scaled = ((v - yMin) * SCALE) / span // 0..SCALE（向下取整）
+    return PAD_T + Number(PLOT_H - (scaled * PLOT_H) / SCALE)
+  }
 
   // 自上而下的水平分区（相邻两条参考线之间）
   const bands = [
@@ -63,21 +77,23 @@ export default function ControlChart({ data }) {
   ].filter(([hi, lo]) => hi > lo)
 
   const lines = [
-    [limits.ucl_3s, `+3σ = ${limits.ucl_3s}`, '#c0392b'],
-    [limits.upper_2s, `+2σ = ${limits.upper_2s}`, '#d68910'],
-    [limits.upper_1s, `+1σ = ${limits.upper_1s}`, '#7d9052'],
-    [target, `中心线 = ${target}`, '#2c3e50'],
-    [limits.lower_1s, `−1σ = ${limits.lower_1s}`, '#7d9052'],
-    [limits.lower_2s, `−2σ = ${limits.lower_2s}`, '#d68910'],
-    [limits.lcl_3s, `−3σ = ${limits.lcl_3s}`, '#c0392b'],
+    [limits.ucl_3s, `+3σ = ${fmt(limits.ucl_3s)}`, '#c0392b'],
+    [limits.upper_2s, `+2σ = ${fmt(limits.upper_2s)}`, '#d68910'],
+    [limits.upper_1s, `+1σ = ${fmt(limits.upper_1s)}`, '#7d9052'],
+    [target, `中心线 = ${fmt(target)}`, '#2c3e50'],
+    [limits.lower_1s, `−1σ = ${fmt(limits.lower_1s)}`, '#7d9052'],
+    [limits.lower_2s, `−2σ = ${fmt(limits.lower_2s)}`, '#d68910'],
+    [limits.lcl_3s, `−3σ = ${fmt(limits.lcl_3s)}`, '#c0392b'],
   ]
 
-  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i)},${y(p.value)}`).join(' ')
+  const linePath = points
+    .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i)},${y(p.value)}`)
+    .join(' ')
 
   return (
     <svg
       data-testid="control-chart"
-      viewBox={`0 0 ${WIDTH} ${PAD_T + PLOT_H + PAD_B}`}
+      viewBox={`0 0 ${WIDTH} ${PAD_T + Number(PLOT_H) + PAD_B}`}
       className="chart"
       role="img"
       aria-label="控制图：读数、中心线与σ分区"
@@ -86,9 +102,9 @@ export default function ControlChart({ data }) {
         <rect
           key={i}
           x={PAD_L}
-          y={y(Math.min(hi, yMax))}
+          y={y(hi > yMax ? yMax : hi)}
           width={PLOT_W}
-          height={Math.max(0, y(Math.max(lo, yMin)) - y(Math.min(hi, yMax)))}
+          height={Math.max(0, y(lo < yMin ? yMin : lo) - y(hi > yMax ? yMax : hi))}
           fill={fill}
         />
       ))}
@@ -114,28 +130,28 @@ export default function ControlChart({ data }) {
 
       {points.map((p) => (
         <circle
-          key={p.index}
-          cx={x(p.index)}
+          key={fmt(p.index)}
+          cx={x(Number(p.index))}
           cy={y(p.value)}
           r={evidence.has(p.index) ? 6.5 : 3.5}
           fill={POINT_COLOR[p.zone]}
           stroke={evidence.has(p.index) ? '#000' : '#fff'}
           strokeWidth={evidence.has(p.index) ? 2 : 1}
         >
-          <title>{`#${p.index} 值=${p.value} 偏差=${p.deviation} 分区=${p.zone}`}</title>
+          <title>{`#${fmt(p.index)} 值=${fmt(p.value)} 偏差=${fmt(p.deviation)} 分区=${p.zone}`}</title>
         </circle>
       ))}
 
       {points.map((p) => (
         <text
-          key={`t-${p.index}`}
-          x={x(p.index)}
-          y={PAD_T + PLOT_H + 20}
+          key={`t-${fmt(p.index)}`}
+          x={x(Number(p.index))}
+          y={PAD_T + Number(PLOT_H) + 20}
           fontSize={10}
           textAnchor="middle"
           fill="#555"
         >
-          {p.index}
+          {fmt(p.index)}
         </text>
       ))}
     </svg>
