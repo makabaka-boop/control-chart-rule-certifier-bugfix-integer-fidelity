@@ -38,6 +38,22 @@
 - 字段缺失、未知字段、类型不符（浮点/布尔/字符串）、`sigma ≤ 0`、读数数量越界均返回 **422**。
 - 响应包含 `stable`、`violation`（`rule_id`/`side`/`end_index`/`evidence_indices`/`evidence`）、`limits` 与每点 `points`（含 `deviation`、`side`、`beyond_*`、`zone`）。
 
+### 整数数值身份（超出 2^53 的大整数）
+
+JavaScript `Number` 只能安全表示到 `2^53−1`，超过后相邻整数会被舍入成同一个
+值，直接改变严格倍数边界的判定。为保证被声明接受的整数在
+**输入 → 请求 → 规则判定 → 响应 → 图表** 中保持同一数值身份：
+
+- 页面不经过 `Number()` / `JSON.stringify` 转换，直接把规范化十进制整数字面量
+  拼进请求体；
+- 响应由前端自带的无损 JSON 解析器读取：安全范围内仍是 `number`，超出
+  `±(2^53−1)` 的整数解析为 `BigInt`；
+- 图表值轴的比较、极差与取整全部走 `BigInt`，仅在映射像素坐标时转为
+  `number`；控制线标签、证据点标题与表格读数始终显示精确十进制文本；
+- 后端 Python/Pydantic 本就按任意精度整数比较，大整数不设上下限；
+- 非整数（浮点、布尔、含小数点的读数）与非正 `sigma` 仍在输入与接口两处拒绝，
+  不存在静默改写后放行的路径。
+
 ## 运行（Docker Compose）
 
 ```bash
@@ -70,12 +86,25 @@ npm run dev
 ```bash
 cd backend
 pip install -r requirements-dev.txt
-pytest                      # 341 passed
+pytest                      # 351 passed（含 10 个 2^53 附近大整数临界用例）
 ```
 
-### 浏览器：只验证一次主流程
+### 前端：无损解析单元测试
 
-E2E 只保留一条用例（提交 → R2 判定 → 证据点在 SVG 与表格中一致）：
+`web/src/api.test.js` 用 Node 内置测试运行器验证无损 JSON 解析（安全整数保持
+`number`、超出范围为 `BigInt`、相邻大整数可区分）、整数规范化与读数解析：
+
+```bash
+cd web
+npm install
+npm run test:unit
+```
+
+### 浏览器：主流程 + 2^53 临界样本
+
+E2E 覆盖：原主流程（R2 + 证据点一致）、`±2^53` 附近的正/负目标、读数、
+`sigma=2^53` 临界样本（页面、原始接口文本、规则结论、SVG 证据标记四方对拍），
+以及普通 +3σ 边界不回退：
 
 ```bash
 docker compose up --build -d
@@ -83,7 +112,7 @@ cd e2e
 npm install
 npx playwright install --with-deps chromium
 npm run test:e2e            # 默认访问 http://localhost:8080
-# E2E_BASE_URL=http://localhost:5173 npm run test:e2e   # 指向 vite dev
+# E2E_BASE_URL=http://localhost:5173 npm run test:e2e   # 指向 vite dev/preview
 ```
 
 工程师最终在页面上看到的是唯一的、可逐点复核的失控证据：违规规则、结束下标、证据下标以及每个读数所在分区。

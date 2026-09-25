@@ -20,17 +20,18 @@ export default function App() {
     setData(null)
     try {
       if (!/^[+-]?\d+$/.test(target.trim())) throw new Error('target 必须是整数')
-      if (!/^\d+$/.test(sigma.trim()) || Number(sigma) <= 0) {
+      if (!/^[+-]?\d+$/.test(sigma.trim()) || BigInt(sigma.trim()) <= 0n) {
         throw new Error('sigma 必须是正整数')
       }
       const readings = parseReadings(readingsText)
       if (readings.length < 2 || readings.length > 200) {
         throw new Error(`readings 需要 2 至 200 个整数（当前 ${readings.length} 个）`)
       }
+      // 以规范化十进制整数字符串发出，大整数不经 Number 舍入
       setData(
         await evaluateReadings({
-          target: Number(target.trim()),
-          sigma: Number(sigma.trim()),
+          target: target.trim(),
+          sigma: sigma.trim(),
           readings,
         }),
       )
