@@ -1,0 +1,16 @@
+services:
+  api:
+    build: ./backend
+    container_name: spc-api
+    restart: unless-stopped
+    expose:
+      - "8000"
+
+  web:
+    build: ./web
+    container_name: spc-web
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
